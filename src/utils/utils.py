@@ -14,6 +14,39 @@ def load_config_from_yaml(config_file_path):
     args = argparse.Namespace(**config_data)
     return args
 
+#learning rate scheduler
+def build_scheduler(opt, kind, total_steps, warmup_steps=0, min_lr_ratio=0.1,
+                    step_size=20000, gamma=0.5, patience=20):
+    """kind: none | cosine | warmup_cosine | step | plateau
+    'plateau' no se llama por iteración: se llama con la métrica de validación."""
+    if kind == 'none':
+        return None
+
+    if kind == 'cosine':
+        base_lr = opt.param_groups[0]['lr']
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=total_steps, eta_min=base_lr * min_lr_ratio)
+
+    if kind == 'warmup_cosine':
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return (step + 1) / max(1, warmup_steps)
+            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+            cos = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+            return min_lr_ratio + (1.0 - min_lr_ratio) * cos
+        return torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+
+    if kind == 'step':
+        return torch.optim.lr_scheduler.StepLR(opt, step_size=step_size, gamma=gamma)
+
+    if kind == 'plateau':
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode='min', factor=gamma, patience=patience,
+            min_lr=opt.param_groups[0]['lr'] * min_lr_ratio)
+
+    raise ValueError(f'lr_scheduler desconocido: {kind}')
+
+
 def exists(x):
     return x is not None
 

@@ -23,7 +23,7 @@ from pytorch_fid.inception import InceptionV3
 from pytorch_fid.fid_score import calculate_frechet_distance
 
 from torch.utils.tensorboard import SummaryWriter
-
+import shutil
 from src.datasets.dataset import *
 from src.utils.utils import *
 from src.evals.ssim import *
@@ -72,6 +72,15 @@ class Trainer(object):
         eval_resolution = [256, 256, 20], # se cambió de [113, 137, 113] a [182, 218, 182] por que para parkinson se hizo el cambio de resolucion a 182x218x182
         ROI_mask = None,
         dx_labels = ['ACV'],
+        lr_scheduler = 'cosine',
+        warmup_steps = 0,
+        min_lr_ratio = 0.1,
+        lr_step_size = 20000,
+        lr_gamma = 0.5,
+        lr_patience = 20,
+        early_stopping_patience = 200,
+        early_stopping_min_delta = 1e-4,
+        reset_patience_on_resume = True,
     ):
         super().__init__()
         self.dataset = dataset
@@ -86,7 +95,11 @@ class Trainer(object):
         self.ROI_mask = ROI_mask
         self.eval_resolution = eval_resolution
         ############# early stopping
-        self.early_stopping = EarlyStopping(patience=200, min_delta=1e-4, verbose=True)
+        self.early_stopping = EarlyStopping(patience=early_stopping_patience,
+                                            min_delta=early_stopping_min_delta, verbose=True)
+        self.reset_patience_on_resume = reset_patience_on_resume
+        self.es_restored = False
+        self._best_backed_up = False        
         #############
         self.loader_num_workers = 0 if os.name == 'nt' else 2
         self.loader_pin_memory = False if os.name == 'nt' else True
@@ -165,7 +178,7 @@ class Trainer(object):
 
             else:
                 if self.eval_dataset == 'ADNI':
-                    self.test_data = folder + 'test.h5' ###
+                    self.test_data = folder + 'valid.h5' ###
                     # use whole scan per iteration
                     ds_test = SlicedScanMRI2PETDataset(eval_resolution, data_path = self.test_data, output_dim=input_slice_channel,
                         direction = image_direction, random_flip=None,
@@ -206,8 +219,13 @@ class Trainer(object):
 
             # optimizer and scheduler
             self.opt = torch.optim.AdamW(diffusion_model.parameters(), lr = train_lr, betas = adam_betas, weight_decay = weight_decay)
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.opt, T_max=train_num_steps, eta_min=train_lr*0.1)
-
+            self.lr_scheduler_type = lr_scheduler
+            self.scheduler = build_scheduler(
+                self.opt, lr_scheduler, train_num_steps,
+                warmup_steps=warmup_steps, min_lr_ratio=min_lr_ratio,
+                step_size=lr_step_size, gamma=lr_gamma, patience=lr_patience)
+            
+                        
             self.results_folder = Path(results_folder)
             self.results_folder.mkdir(exist_ok = True)
 
@@ -235,11 +253,20 @@ class Trainer(object):
             'step': self.step,
             'model': self.accelerator.get_state_dict(self.model),
             'opt': self.opt.state_dict(),
+            'scheduler': self.scheduler.state_dict() if self.scheduler is not None else None,
             'ema': self.ema.state_dict(),
             'scaler': self.accelerator.scaler.state_dict() if exists(self.accelerator.scaler) else None,
+            'early_stopping': self.early_stopping.state_dict(),
         }
     
-        torch.save(data, str(self.results_folder / model_name))
+        # escritura atómica: nunca deja un .pt a medias si se corta el proceso
+        tmp_path = str(self.results_folder / (model_name + '.tmp'))
+        torch.save(data, tmp_path)
+        os.replace(tmp_path, str(self.results_folder / model_name))
+        
+        
+        
+        
 
     def load(self, milestone = 0, path = None):
         accelerator = self.accelerator
@@ -261,6 +288,22 @@ class Trainer(object):
 
         msg_opt = self.opt.load_state_dict(data['opt'])
 
+        ## scheduler 
+
+        if self.scheduler is not None and data.get('scheduler') is not None:
+            self.scheduler.load_state_dict(data['scheduler'])
+
+        es_state = data.get('early_stopping')
+        if es_state is not None:
+            self.early_stopping.load_state_dict(es_state, reset_patience=self.reset_patience_on_resume)
+            self.es_restored = True
+            print(f'[EarlyStopping] restaurado: mejor lesion_mae={self.early_stopping.best_lesion_mae:.6f} '
+                  f'en step {self.early_stopping.best_step}')
+        else:
+            print('[WARN] El checkpoint no tiene estado de early stopping (checkpoint antiguo).')
+            
+            
+            
         if self.accelerator.is_main_process:
             msg_ema = self.ema.load_state_dict(data["ema"], strict=False)
             print("ema missing keys:", msg_ema.missing_keys)
@@ -422,7 +465,9 @@ class Trainer(object):
                 accelerator.wait_for_everyone()
 
                 self.opt.step()
-                self.scheduler.step()
+                if self.scheduler is not None and self.lr_scheduler_type != 'plateau':
+                    self.scheduler.step()
+                self.writer.add_scalar('train/lr', self.opt.param_groups[0]['lr'], self.step)                
                 
 
                 accelerator.wait_for_everyone()
@@ -473,13 +518,13 @@ class Trainer(object):
                                     # save validation loss to tensorboard
                                     self.writer.add_scalar('val/val_loss', valid_loss, self.step)
 
-                                    print('valid_pet_shape:', valid_data_pet.shape)
+                                    print('valid_dwi_shape:', valid_data_pet.shape)
 
                                     sample_pet = self.ema.ema_model.sample(shape = valid_data_pet.shape, cond = valid_cond_data.to(device), 
                                                         tab_cond = tabular_data)
                                     
                                                                    
-                                    print('sample_spect_shape:', sample_pet.shape)
+                                    print('sample_dwi_shape:', sample_pet.shape)
                                     
 
                                     all_images_list.append(sample_pet)
@@ -528,6 +573,9 @@ class Trainer(object):
                         recon_loss_l1 = F.l1_loss(all_images, data.to(device))
                         print(f'valid recon L1 loss: {recon_loss_l1:.5f}')
 
+                        # 'plateau': una sola vez por validación completa (no por batch)
+                        if self.scheduler is not None and self.lr_scheduler_type == 'plateau':
+                            self.scheduler.step(float(recon_loss_l1))
 
                         with open(str(self.results_folder / f'scores.txt'), 'a') as f:
                             f.write('\n')
@@ -620,7 +668,16 @@ class Trainer(object):
 
                             # Guardar SOLO si lesion_mae mejoró
                             if self.early_stopping.counter == 0:
-
+                                
+                                # Guardar el checkpoint del mejor modelo de validación (según lesion_mae)
+                                best_path = self.results_folder / 'best_val_model.pt'
+                                # Sin estado restaurado, el "mejor" de esta corrida no es comparable con el
+                                # archivo viejo: se respalda una vez antes de sobrescribirlo.
+                                if (not self.es_restored) and best_path.exists() and not self._best_backed_up:
+                                    shutil.copy(best_path, self.results_folder / 'best_val_model_prev.pt')
+                                    self._best_backed_up = True
+                                    
+                                    
                                 self.save(
                                     milestone,
                                     model_name='best_val_model.pt'
@@ -636,6 +693,8 @@ class Trainer(object):
 
                             if should_stop:
                                 accelerator.print('Early stopping activado.')
+                                
+                                self.save(milestone)  # model.pt con el estado final del early stopping
                                 break
 
                         else:
@@ -679,7 +738,7 @@ class Trainer(object):
             if os.path.exists(scores_file):
                 with open(scores_file, 'r') as f:
                     for line in f:
-                        if 'MRI -> SPECT:' in line:
+                        if 'NCCT -> DWI:' in line:
                             uid = line.split(':')[1].strip().split('_')[0]
                             already_done.add(uid)
                 print(f'Pacientes ya procesados: {len(already_done)} → {already_done}')
@@ -768,18 +827,18 @@ class Trainer(object):
                         if not synthesis:
                             test_loss = torch.abs(sample_pet - pet_slice)
                             print(f'****** Slice {slice_num}: *********')
-                            print(f'=========== MRI -> SPECT, loss(GT SPECT, Syn SPECT): =============')
+                            print(f'=========== NCCT -> DWI, loss(GT DWI, Syn DWI): =============')
                             for batch in range(test_loss.shape[0]):
                                 batch_loss = test_loss[batch].mean()
                                 label = LABEL_MAP[int(dx_label[batch].item())]
                                 print(f'{label}: {batch_loss:.6f} | ')
                         
-                        # if model_cycling then calculate the SPECT -> MRI loss
+                        # if model_cycling then calculate the DWI -> NCCT loss
                         if self.model_cycling and not synthesis:
                             model_output = self.ema.ema_model(cond_slice, cond = sample_pet, tab_cond = tabular_data, 
                                                     model_cycle = True)
                             cycle_loss = model_output['loss']
-                            print(f'========== SPECT -> MRI, loss(GT MRI, Syn MRI): ==========')
+                            print(f'========== DWI -> NCCT, loss(GT NCCT, Syn NCCT): ==========')
 
                             for batch in range(cycle_loss.shape[0]):
                                 batch_loss = cycle_loss[batch].mean()
@@ -870,65 +929,65 @@ class Trainer(object):
                         _L1_loss = np.abs(whole_pet_sample[slice_batch] - whole_GT_pet[slice_batch])
                         L1_loss = _L1_loss.mean()
 
-                        pet_sample_file_name = str(syn_folder / f'{_mri_uid}_{img_label}_syn_spect.nii.gz')
+                        pet_sample_file_name = str(syn_folder / f'{_mri_uid}_{img_label}_syn_dwi.nii.gz')
 
                         pet_sample_unscaled = unscale_dwi(whole_pet_sample[slice_batch].squeeze())
                         pet_sample_img = nib.Nifti1Image(pet_sample_unscaled, affine=affine)
                         pet_sample_img.to_filename(pet_sample_file_name)
-                        print(f'MRI -> SPECT: {_mri_uid}_{img_label}: {L1_loss:.6f}')
+                        print(f'NCCT -> DWI: {_mri_uid}_{img_label}: {L1_loss:.6f}')
 
                         torch.cuda.empty_cache() # --- limpiar la caché de GPU después de cada iteración para evitar problemas de memoria
 
                         with open(str(syn_folder / f'all_eval_scores.txt'), 'a') as f:
                             f.write('\n')
-                            f.write(f'MRI -> SPECT: {_mri_uid}_{img_label}: {L1_loss:.6f}')
+                            f.write(f'NCCT -> DWI: {_mri_uid}_{img_label}: {L1_loss:.6f}')
                         if get_ROI_loss:
                             ROI_loss = _L1_loss * self.ROI_mask
                             ROI_loss = ROI_loss.mean()
-                            print(f'MRI -> SPECT ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
+                            print(f'NCCT -> DWI ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
                             with open(str(syn_folder / f'all_eval_scores.txt'), 'a') as f:
                                 f.write('\n')
-                                f.write(f'MRI -> SPECT ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
+                                f.write(f'NCCT -> DWI ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
                             roi_losses.append(ROI_loss)
                     else:
                         whole_pet_sample_unscaled = unscale_dwi(whole_pet_sample[slice_batch].squeeze())
                         whole_GT_pet_unscaled = unscale_dwi(whole_GT_pet[slice_batch].squeeze())
 
                         whole_pet_sample_img = nib.Nifti1Image(whole_pet_sample_unscaled, affine=affine)
-                        whole_pet_sample_img.to_filename(str(self.evaluate_folder / f'whole_sample_spect_{_mri_uid}_{slice_batch}_{img_label}.nii.gz'))
+                        whole_pet_sample_img.to_filename(str(self.evaluate_folder / f'whole_sample_dwi_{_mri_uid}_{slice_batch}_{img_label}.nii.gz'))
 
                         whole_GT_pet_img = nib.Nifti1Image(whole_GT_pet_unscaled, affine=affine)
-                        whole_GT_pet_img.to_filename(str(self.evaluate_folder / f'whole_GT_spect_{_mri_uid}_{slice_batch}_{img_label}.nii.gz'))
+                        whole_GT_pet_img.to_filename(str(self.evaluate_folder / f'whole_GT_dwi_{_mri_uid}_{slice_batch}_{img_label}.nii.gz'))
 
                         error_map_img = nib.Nifti1Image(pet_sample_unscaled - whole_GT_pet_unscaled, affine=affine)                     
                         error_map_img.to_filename(str(self.evaluate_folder / f'error_map_{_mri_uid}_{slice_batch}_{img_label}.nii.gz'))
 
                         _L1_loss = np.abs(whole_pet_sample[slice_batch] - whole_GT_pet[slice_batch])
                         L1_loss = _L1_loss.mean()
-                        print(f'MRI -> SPECT: {_mri_uid}_{img_label}: {L1_loss:.6f}')
+                        print(f'NCCT -> DWI: {_mri_uid}_{img_label}: {L1_loss:.6f}')
 
                         with open(str(self.evaluate_folder / f'eval_scores.txt'), 'a') as f:
                             f.write('\n')
-                            f.write(f'MRI -> SPECT: {_mri_uid}_{img_label}: {L1_loss:.6f}')
+                            f.write(f'NCCT -> DWI: {_mri_uid}_{img_label}: {L1_loss:.6f}')
                         
                         if get_ROI_loss:
                             ROI_loss = _L1_loss * self.ROI_mask
                             ROI_loss = ROI_loss.mean()
-                            print(f'MRI -> SPECT ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
+                            print(f'NCCT -> DWI ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
                             with open(str(self.evaluate_folder / f'eval_scores.txt'), 'a') as f:
                                 f.write('\n')
-                                f.write(f'MRI -> SPECT ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
+                                f.write(f'NCCT -> DWI ROI loss: {_mri_uid}_{img_label}: {ROI_loss:.6f}')
                             roi_losses.append(ROI_loss)
                         
 
 
                     if self.model_cycling and not synthesis:
                         L1_loss_mri = np.abs(whole_mri_sample[slice_batch] - whole_GT_mri[slice_batch]).mean()
-                        print(f'SPECT -> MRI: {_mri_uid}_{img_label}: {L1_loss_mri:.6f}')
+                        print(f'DWI -> NCCT: {_mri_uid}_{img_label}: {L1_loss_mri:.6f}')
                         print('====================')
                         with open(str(self.evaluate_folder / f'eval_scores.txt'), 'a') as f:
                             f.write('\n')
-                            f.write(f'SPECT -> MRI: {_mri_uid}_{img_label}: {L1_loss_mri:.6f}')
+                            f.write(f'DWI -> NCCT: {_mri_uid}_{img_label}: {L1_loss_mri:.6f}')
                             f.write('\n')
                             f.write('====================')
 

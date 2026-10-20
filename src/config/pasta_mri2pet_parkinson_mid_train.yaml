@@ -26,7 +26,7 @@ cond_apply_method: 'ada'
 
 ##### Diffusion config ####
 
-timestep_respacing: ddim100 
+timestep_respacing: ddim500   #aumentar en inferencia para ver el cambio en la calidad de la imagen
 beta_schedule: cosine
 timesteps: 1000
 objective: START_X
@@ -35,15 +35,30 @@ gen_type: ddim
 condition: true
 loss_type: l1
 reconstructed_loss: l1
-recon_weight: 0.1  #antes 0.1 ahora 1.0
+recon_weight: 0.1  
 rescale_intensity: true
 
 ##### Trainer config ####
 
 input_slice_channel: 3
-data_dir: "/home/brain/Data/Users/jeison/ACV/PASTA/data/"
+data_dir: "/home/Data/sangohe_pupils/laura/ModeloDifusion/data/"
 train_batch_size: 1
-train_lr: !!float 1e-4 #cambie de 5e-4 
+train_lr: !!float 1e-4 #cambie de 5e-4     #hacerlo calanderizado
+
+# --- learning rate scheduler ---
+lr_scheduler: warmup_cosine   # none | cosine | warmup_cosine | step | plateau
+warmup_steps: 1000
+min_lr_ratio: 0.1             # LR final = train_lr * min_lr_ratio
+lr_step_size: 20000           # solo para 'step'
+lr_gamma: 0.5                 # para 'step' y 'plateau'
+lr_patience: 20               # solo para 'plateau' (en validaciones)
+
+# --- early stopping ---
+early_stopping_patience: 200  # en validaciones (x save_and_sample_every pasos)
+early_stopping_min_delta: !!float 1e-4
+reset_patience_on_resume: true  # al reanudar: conserva el mejor valor, reinicia el contador
+
+
 weight_decay: !!float  1e-6 #1e-6
 train_num_steps: 80000
 save_and_sample_every: 100
@@ -60,7 +75,7 @@ ROI_mask: null
 model_cycling: true
 with_DTI: false
 dx_labels: ['ACV']
-results_folder: "/home/brain/Data/Users/jeison/ACV/PASTA/results_acv"
+results_folder: "/home/Data/sangohe_pupils/laura/ModeloDifusion/results_acv"
 resume: null
 pretrain: null
 

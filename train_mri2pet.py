@@ -130,11 +130,20 @@ def main():
         model_cycling = args.model_cycling,
         ROI_mask = args.ROI_mask,
         dx_labels = args.dx_labels,
+        lr_scheduler = getattr(args, 'lr_scheduler', 'cosine'),
+        warmup_steps = getattr(args, 'warmup_steps', 0),
+        min_lr_ratio = getattr(args, 'min_lr_ratio', 0.1),
+        lr_step_size = getattr(args, 'lr_step_size', 20000),
+        lr_gamma = getattr(args, 'lr_gamma', 0.5),
+        lr_patience = getattr(args, 'lr_patience', 20),
+        early_stopping_patience = getattr(args, 'early_stopping_patience', 200),
+        early_stopping_min_delta = getattr(args, 'early_stopping_min_delta', 1e-4),
+        reset_patience_on_resume = getattr(args, 'reset_patience_on_resume', True),
     )
 
     if trainer.eval_mode:
         if args.synthesis:
-            synth_folder = os.path.join(trainer.results_folder, 'syn_spect')
+            synth_folder = os.path.join(trainer.results_folder, 'syn_dwi')
             eval_model = os.path.join(trainer.results_folder, 'best_val_model.pt') #se evalua con el mejor checkpoint, antes estaba 'model.pt'
             if not os.path.exists(eval_model):
                 raise FileNotFoundError(

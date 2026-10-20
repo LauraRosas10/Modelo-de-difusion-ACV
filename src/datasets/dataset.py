@@ -671,7 +671,7 @@ class MRI2PET_2_5D_Dataset(Dataset):
                 _roi_bin = (_roi_slice > 0.5).astype(np.float32)
 
                 _loss_weight = np.ones_like(_roi_bin, dtype=np.float32)
-                _loss_weight[_roi_bin > 0.5] = 10.0
+                _loss_weight[_roi_bin > 0.5] = 50.0     #peso en la región de interés futuro a cambio
             else:
                 _loss_weight = np.ones((self.resolution[0], self.resolution[1]), dtype=np.float32)
 

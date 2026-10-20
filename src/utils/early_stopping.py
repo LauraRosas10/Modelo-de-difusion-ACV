@@ -27,7 +27,23 @@ class EarlyStopping:
         self.counter = 0
         self.best_step = 0
         self.stop_training = False
+        
+    # Estado del early stopping guardado para poder reanudar el entrenamiento desde un checkpoint
+    _STATE_KEYS = ('best_lesion_mae', 'best_ssim', 'best_mae',
+                   'counter', 'best_step', 'stop_training')
 
+    def state_dict(self):
+        return {k: getattr(self, k) for k in self._STATE_KEYS}
+
+    def load_state_dict(self, state, reset_patience=False):
+        for k in self._STATE_KEYS:
+            if k in state:
+                setattr(self, k, state[k])
+        if reset_patience:  # conserva el mejor valor, pero da otra oportunidad
+            self.counter = 0
+            self.stop_training = False
+            
+            
     def __call__(self, lesion_mae: float, ssim: float, mae: float, step: int) -> bool:
         improved = float(lesion_mae) < self.best_lesion_mae - self.min_delta
 
