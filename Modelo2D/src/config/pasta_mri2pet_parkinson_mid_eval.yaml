@@ -1,0 +1,90 @@
+
+##### Unet config ####
+
+image_size: [256, 256]
+model_in_channels: 3
+out_channels_model: 3
+unet_dim: 64
+encoder_in_channels: 3
+out_channels_encoder: 3
+num_res_blocks: 2 #cambio de 4 a 2 por memoria
+attention_resolutions: [16, 8, 4]
+num_heads: 4
+unet_dim_mults: [1, 2, 3, 4]
+dropout: 0
+dims: 2
+cond_emb_channels: 2048
+resblock_updown: true
+use_time_condition: true
+tab_cond_dim: 9
+use_tabular_cond_model: condition
+use_tabular_cond_encoder: null
+tabular_cond: true
+with_attention: true
+cond_apply_method: 'ada'
+
+##### Diffusion config ####
+
+timestep_respacing: ddim500  #estaba en ddim100, lo cambie a ddim200 para ver si mejora la calidad de la imagen
+beta_schedule: cosine
+timesteps: 1000
+objective: START_X
+model_var_type: FIXED_LARGE
+gen_type: ddim
+condition: true
+loss_type: l1
+reconstructed_loss: l1
+recon_weight: 0.1  #antes 0.1 ahora 1.0
+rescale_intensity: true
+
+##### Trainer config ####
+
+input_slice_channel: 3
+data_dir: "/home/Data/sangohe_pupils/laura/ModeloDifusion/data/"
+train_batch_size: 1
+train_lr: !!float 1e-4 #cambie de 5e-4 
+
+
+
+# --- learning rate scheduler ---
+lr_scheduler: warmup_cosine   # none | cosine | warmup_cosine | step | plateau
+warmup_steps: 1000
+min_lr_ratio: 0.1             # LR final = train_lr * min_lr_ratio
+lr_step_size: 20000           # solo para 'step'
+lr_gamma: 0.5                 # para 'step' y 'plateau'
+lr_patience: 20               # solo para 'plateau' (en validaciones)
+
+# --- early stopping ---
+early_stopping_patience: 200  # en validaciones (x save_and_sample_every pasos)
+early_stopping_min_delta: !!float 1e-4
+reset_patience_on_resume: true  # al reanudar: conserva el mejor valor, reinicia el contador
+
+
+
+weight_decay: !!float 1e-6
+train_num_steps: 80000
+save_and_sample_every: 5
+num_samples: 16
+gradient_accumulate_every: 1
+ema_decay: 0.999
+amp: false
+fp16: true
+calculate_fid: false
+dataset: MRI2PET
+image_direction: axial
+num_slices: all
+ROI_mask: null
+model_cycling: true
+with_DTI: false
+dx_labels: ['ACV']
+results_folder: "/home/Data/sangohe_pupils/laura/ModeloDifusion/results_acv"
+resume: null
+pretrain: null
+
+###### evaluation config #####
+
+test_batch_size: 1
+eval_dataset: ADNI
+eval_resolution: [256, 256, 20]
+eval_mode: true
+synthesis: true
