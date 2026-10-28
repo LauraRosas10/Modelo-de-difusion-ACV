@@ -1,0 +1,101 @@
+# =====================================================================================
+#  PASTA-3D  |  NCCT -> DWI (ACV)  |  EVALUATION / SYNTHESIS config
+#  Architecture: fully 3D (Conv3d) dual-arm UNet + conditional diffusion (START_X objective)
+# =====================================================================================
+
+##### Volume / data layout ####
+# (H, W, D) of the volumes as stored in the H5 / NIfTI files. The network sees tensors (B, 1, D, H, W).
+volume_size: [256, 256, 20]
+# 3D patches used for TRAINING (H, W, D). null -> whole volume. Validation / evaluation always use the
+# whole volume. H and W of the patch must be divisible by 2**(len(unet_dim_mults)-1) = 8.
+patch_size: [128, 128, 20]
+lesion_patch_prob: 0.5      # probability that a training patch is centered on a lesion voxel
+lesion_weight: 50.0         # loss weight inside the lesion mask (background = 1)
+inplane_resize: true        # resize H, W to volume_size (as the 2.5D pipeline did); false -> center crop/pad
+random_flip: false          # left-right flip augmentation (NCCT, DWI and mask flipped together)
+num_workers: null           # null -> 2 (0 on Windows)
+
+##### Unet config ####
+dims: 3                     # <<< 3D architecture (Conv3d, 3D norm/attention, anisotropic down/up-sampling)
+model_in_channels: 1        # 1 volume channel (was 3 or 15 neighbouring slices as channels)
+out_channels_model: 1
+encoder_in_channels: 1
+out_channels_encoder: 1
+unet_dim: 32                # 64 in the 2D version; 3D convs are ~3x bigger per layer, halve the width
+num_res_blocks: 2
+attention_resolutions: [16, 8, 4]   # 'ds' factors at which attention is applied (only 4 and 8 exist with 4 levels)
+attention_type_3d: project_excite   # project_excite | full | none  (what is used at those levels in 3D)
+num_heads: 4
+unet_dim_mults: [1, 2, 3, 4]
+dropout: 0
+cond_emb_channels: 2048
+resblock_updown: true
+use_time_condition: true
+use_checkpoint: true        # gradient checkpointing (recommended for 3D: saves a lot of activation memory)
+tab_cond_dim: 9
+use_tabular_cond_model: condition
+use_tabular_cond_encoder: null
+tabular_cond: true
+with_attention: true        # global self-attention in the bottleneck (uses fused SDPA kernels)
+cond_apply_method: 'ada'
+
+##### Diffusion config ####
+# NOTE (must match the training config): SpacedDiffusion uses the SAME respaced timesteps for training and sampling, so the value used in
+# training must be the one used at evaluation (eval config copies it).
+timestep_respacing: ddim100
+beta_schedule: cosine
+timesteps: 1000
+objective: START_X
+model_var_type: FIXED_LARGE
+gen_type: ddim
+condition: true
+loss_type: l1
+reconstructed_loss: l1
+recon_weight: 0.1
+rescale_intensity: true
+
+##### Trainer config ####
+data_dir: "/home/Data/sangohe_pupils/laura/ModeloDifusion/data/"   # folder with train.h5 / valid.h5
+train_batch_size: 1
+train_lr: !!float 1e-4
+weight_decay: !!float 1e-6
+
+# --- learning rate scheduler ---
+lr_scheduler: warmup_cosine   # none | cosine | warmup_cosine | step | plateau
+warmup_steps: 1000
+min_lr_ratio: 0.1
+lr_step_size: 20000
+lr_gamma: 0.5
+lr_patience: 20
+
+# --- early stopping (on lesion MAE, in validations) ---
+early_stopping_patience: 200
+early_stopping_min_delta: !!float 1e-4
+reset_patience_on_resume: true
+
+train_num_steps: 80000
+save_and_sample_every: 200     # validation = full 3D diffusion sampling of `max_val_volumes` volumes
+max_val_volumes: 4
+num_samples: 16                # unused in 3D (kept for compatibility)
+gradient_accumulate_every: 4
+ema_decay: 0.999
+amp: false
+fp16: true                     # mixed precision (ignored automatically on CPU)
+calculate_fid: false           # slice-wise FID (needs pytorch-fid weights)
+dataset: MRI2PET
+ROI_mask: null
+model_cycling: true            # CycleEx (4 forward passes per step)
+cycle_detach: true             # true: backward each cycle term separately (much less 3D memory); false: original behaviour
+with_DTI: false
+dx_labels: ['ACV']
+results_folder: "/home/Data/sangohe_pupils/laura/ModeloDifusion/results_acv_3d"
+resume: null
+pretrain: null                 # path to a 2D/2.5D or 3D checkpoint; 2D kernels are inflated to 3D automatically
+pretrain_inflate: center       # center | mean
+
+###### evaluation config #####
+test_batch_size: 1
+eval_h5: valid.h5
+output_voxel_size: [1.5, 1.5, 1.5]
+eval_mode: true
+synthesis: true
