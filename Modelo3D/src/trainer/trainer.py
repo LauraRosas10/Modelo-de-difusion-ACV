@@ -659,7 +659,8 @@ class Trainer(object):
             tab = batch['tabular'].to(self.device) if self.tabular_cond else None
 
             # one diffusion run synthesises the WHOLE volume (B, 1, D, H, W)
-            sample = ema.sample(shape=pet.shape, cond=mri, tab_cond=tab, progress=True)
+            #sample = ema.sample(shape=pet.shape, cond=mri, tab_cond=tab, progress=True)
+            with self._autocast():sample = ema.sample(shape=pet.shape,cond=mri,tab_cond=tab,progress=True)
 
             cycle_out = None
             if self.model_cycling and not synthesis:

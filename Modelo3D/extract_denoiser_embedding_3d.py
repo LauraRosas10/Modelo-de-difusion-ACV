@@ -21,13 +21,13 @@ IMPORTANTE:
 
 python extract_denoiser_embedding_3d.py \
     --config src/config/pasta3d_acv_eval.yaml \
-    --split test \
+    --split valid \
     --source noise \
     --t last \
     --layers mid \
     --pool meanmax \
     --grid 4 6 6 \
-    --out results_acv_3d/embeddings_test
+    --out results_acv_3d/embeddings_valid
 """
 import argparse
 import csv
@@ -255,7 +255,7 @@ def safe_name(uid):
 def main():
     p = argparse.ArgumentParser(description='Extracción de embeddings PASTA 3D para NCCT -> DWI.')
     p.add_argument('--config', required=True, help='YAML 3D usado en entrenamiento/evaluación')
-    p.add_argument('--checkpoint', default=None, help='Por defecto: <results_folder>/best_val_model.pt')
+    p.add_argument('--checkpoint', default=None, help='Por defecto: <results_folder>/model.pt')
     p.add_argument('--weights', choices=['ema', 'model'], default='ema')
     p.add_argument('--split', choices=['train', 'valid', 'test'], default='test')
     p.add_argument('--source', choices=['noise', 'gt'], default='noise')
@@ -279,7 +279,7 @@ def main():
         raise ValueError('Use tres valores positivos o --grid 0 0 0 para resolución nativa.')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    checkpoint = cli.checkpoint or os.path.join(args.results_folder, 'best_val_model.pt')
+    checkpoint = cli.checkpoint or os.path.join(args.results_folder, 'model.pt')
     out_dir = cli.out or os.path.join(args.results_folder, 'embeddings_3d')
     patient_dir = os.path.join(out_dir, 'patients')
     os.makedirs(patient_dir, exist_ok=True)

@@ -127,7 +127,8 @@ def main():
             tags=getattr(args, 'wandb_tags', ['acv', '3d', 'diffusion']),
             config=args_dict,
             dir=args.results_folder,
-            resume='allow' if args.resume else None,
+            #id="9jl35bvv",  #quitar si quiero inciar otro experimento diferente 
+            resume='allow' if args.resume else None, #resume="must",#  #descomentar si quiero inciar otro experimento diferente
         )
         wandb.define_metric('global_step')
         wandb.define_metric('train/*', step_metric='global_step')
@@ -185,7 +186,7 @@ def main():
     if trainer.eval_mode:
         if args.synthesis:
             synth_folder = os.path.join(str(trainer.results_folder), 'syn_dwi')
-            eval_model = os.path.join(str(trainer.results_folder), 'best_val_model.pt') # best checkpoint (lesion_mae)
+            eval_model = os.path.join(str(trainer.results_folder), 'model.pt') # best checkpoint (lesion_mae)
             if not os.path.exists(eval_model):
                 raise FileNotFoundError(
                     f"Checkpoint not found: {eval_model}. Train PASTA first or copy a pretrained model.pt into the results folder."
@@ -194,7 +195,7 @@ def main():
             trainer.evaluate(eval_model, synth_folder, synthesis=True, synthesis_folder = synth_folder, get_ROI_loss=use_roi_loss)
         else:
             eval_folder = os.path.join(str(trainer.results_folder), 'eval')
-            eval_model = os.path.join(str(trainer.results_folder), 'best_val_model.pt')
+            eval_model = os.path.join(str(trainer.results_folder), 'model.pt')
             trainer.evaluate(eval_model, eval_folder)
     else:
         try:

@@ -1,14 +1,10 @@
-# =====================================================================================
-#  PASTA-3D  |  NCCT -> DWI (ACV)  |  TRAINING config
-#  Architecture: fully 3D (Conv3d) dual-arm UNet + conditional diffusion (START_X objective)
-# =====================================================================================
 
 ##### Volume / data layout ####
 # (H, W, D) of the volumes as stored in the H5 / NIfTI files. The network sees tensors (B, 1, D, H, W).
 volume_size: [256, 256, 20]
 # 3D patches used for TRAINING (H, W, D). null -> whole volume. Validation / evaluation always use the
 # whole volume. H and W of the patch must be divisible by 2**(len(unet_dim_mults)-1) = 8.
-patch_size: [128, 128, 20]
+patch_size: [96,96,20]  #[128, 128, 20]
 lesion_patch_prob: 0.5      # probability that a training patch is centered on a lesion voxel
 lesion_weight: 50.0         # loss weight inside the lesion mask (background = 1)
 inplane_resize: true        # resize H, W to volume_size (as the 2.5D pipeline did); false -> center crop/pad
@@ -56,7 +52,7 @@ rescale_intensity: true
 
 ##### Trainer config ####
 data_dir: "/home/Data/sangohe_pupils/laura/ModeloDifusion/data_256x256/"   # folder with train.h5 / valid.h5
-train_batch_size: 1
+train_batch_size: 4
 train_lr: !!float 1e-4
 weight_decay: !!float 1e-6
 
